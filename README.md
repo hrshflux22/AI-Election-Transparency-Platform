@@ -1,1 +1,0 @@
-# AI-Election-Transparency-Platform
