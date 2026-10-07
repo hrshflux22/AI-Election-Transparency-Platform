@@ -8,7 +8,12 @@
     "start": "next start",
     "db:push": "drizzle-kit push",
     "db:seed": "tsx --env-file=.env.local src/lib/seed.ts",
-    "db:ocr": "tsx --env-file=.env.local src/lib/ocrBulk.ts"
+    "db:ocr": "tsx --env-file=.env.local src/lib/ocrBulk.ts",
+    "db:ocr:shootout": "tsx --env-file=.env.local src/lib/ocrShootout.ts",
+    "db:ocr:compare": "tsx --env-file=.env.local src/lib/ocrCompare.ts",
+    "db:ocr:probe": "tsx --env-file=.env.local src/lib/ocrProbe.ts",
+    "db:ocr:inspect": "tsx --env-file=.env.local src/lib/ocrInspect.ts",
+    "test": "tsx src/lib/ocr/vlm.test.ts"
   },
   "dependencies": {
     "@emotion/react": "11.14.0",

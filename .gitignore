@@ -2,3 +2,8 @@ node_modules/
 .next/
 .env.local
 drizzle/
+
+# local OCR grind-loop artifacts
+ocr-grind-*.log
+loop-gemini-*.txt
+loop-gemini.tmp.ps1

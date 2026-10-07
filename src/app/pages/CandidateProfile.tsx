@@ -295,7 +295,7 @@ export function CandidateProfile() {
         <TabsContent value="scan" className="p-6 space-y-5">
           <div>
             <h3 className="text-lg font-semibold text-gray-900">Scan candidate affidavit</h3>
-            <p className="text-sm text-gray-600 mt-1">Upload a JPG, PNG, WEBP, TIFF, or searchable PDF. Your document is processed securely on the server.</p>
+            <p className="text-sm text-gray-600 mt-1">Upload an affidavit PDF. It is read page by page on the server and the Form 26 fields are extracted for you.</p>
           </div>
           <label className="flex flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed border-blue-200 bg-blue-50/50 p-8 cursor-pointer hover:bg-blue-50">
             {scanStatus === "uploading" ? <Loader2 className="w-8 h-8 text-blue-600 animate-spin" /> : <Upload className="w-8 h-8 text-blue-600" />}
@@ -311,9 +311,11 @@ export function CandidateProfile() {
             <div className="rounded-xl border border-green-200 bg-green-50 p-4 space-y-3">
               <div className="flex items-center gap-2 font-semibold text-green-900"><CheckCircle2 className="w-5 h-5" /> Scan complete ({scanResult.source})</div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm">
-                {Object.entries(scanResult.parsed).filter(([key, value]) => key !== "rawText" && value !== undefined).map(([key, value]) => (
-                  <div key={key} className="rounded-lg bg-white/70 p-2"><span className="text-gray-500 capitalize">{key.replace(/([A-Z])/g, " $1")}: </span><strong>{String(value)}</strong></div>
-                ))}
+                {Object.entries(scanResult.parsed)
+                  .filter(([key, value]) => !key.startsWith("_") && key !== "rawText" && value !== undefined && value !== null && value !== "")
+                  .map(([key, value]) => (
+                    <div key={key} className="rounded-lg bg-white/70 p-2"><span className="text-gray-500 capitalize">{key.replace(/([A-Z])/g, " $1")}: </span><strong>{Array.isArray(value) ? value.map((item) => (typeof item === "object" ? JSON.stringify(item) : String(item))).join(" · ") : typeof value === "object" ? JSON.stringify(value) : String(value)}</strong></div>
+                  ))}
               </div>
               <Button onClick={() => {
                 localStorage.setItem(`affidavit-scan-${id}`, JSON.stringify(scanResult));
