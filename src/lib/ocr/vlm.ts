@@ -525,6 +525,187 @@ export function countFilledKeyFields(data: Record<string, unknown>): number {
   return KEY_FIELDS.filter((f) => !isBlank(data[f])).length;
 }
 
+/**
+ * Free-tier models drift from the schema's key names. These aliases map what
+ * they actually emit back onto the canonical keys so coverage, comparison and
+ * the UI all see one consistent shape.
+ */
+const EXTRACTION_KEY_ALIASES: Record<string, readonly string[]> = {
+  name: ["candidateName", "candidate_name", "fullName"],
+  fatherName: ["fatherHusbandName", "fatherOrHusbandName", "fatherHusbandsName", "father_husband_name"],
+  educationalQualification: ["education", "educationalQualifications", "qualification"],
+  totalLiabilities: ["liabilitiesTotal", "totalLiability", "totalLiabilitiesAmount"],
+  electoralHistory: ["electionHistory", "electionsContested"],
+  party: ["politicalParty", "partyName"],
+  address: ["candidateAddress", "permanentAddress"],
+  dateOfBirth: ["dob", "dateOfBirthAsOn"],
+  constituency: ["constituencyName", "assemblyConstituency"],
+};
+
+/** Schema fields declared as STRING/INTEGER/NUMBER: anything object-shaped here is a defect. */
+const SCALAR_EXTRACTION_FIELDS = [
+  "name",
+  "fatherName",
+  "age",
+  "gender",
+  "dateOfBirth",
+  "occupation",
+  "address",
+  "citizenship",
+  "constituency",
+  "state",
+  "educationalQualification",
+  "spouseName",
+  "criminalCases",
+  "totalMovableAssets",
+  "totalImmovableAssets",
+  "totalAssets",
+  "totalLiabilities",
+  "confidence",
+  "pan",
+  "form26Found",
+  "form26Pages",
+  "party",
+] as const;
+
+/**
+ * Renders a scalar extraction field as a string without ever producing
+ * "[object Object]": arrays join with "; ", objects fall back to JSON.
+ */
+function scalarString(value: unknown): string | undefined {
+  if (value === null || value === undefined) return undefined;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed || undefined;
+  }
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) {
+    const parts = value.map((v) => scalarString(v)).filter((v): v is string => v !== undefined);
+    return parts.length ? parts.join("; ") : undefined;
+  }
+  return JSON.stringify(value);
+}
+
+/** Keys (normalised: lowercase, alphanumeric only) that hold a document-printed grand total. */
+const MONEY_TOTAL_KEYS = new Set(["grosstotalvalue", "grandtotalliabilities", "grandtotalvalue", "grandtotal"]);
+
+/** Parses a rupee leaf as written ("rs 50,000/-", "277000/-", 0); null when not a plain amount. */
+function parseRupeeLeaf(value: unknown): number | null {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (typeof value !== "string") return null;
+  const s = value.trim();
+  if (!s) return 0;
+  if (/^(nil|n\/?a|not applicable|none|null|-|0+)$/i.test(s)) return 0;
+  const m = s.match(/^(?:rs\.?\s*)?([\d,]+(?:\.\d+)?)\s*(?:\/-)?$/i);
+  if (!m) return null;
+  const n = parseFloat(m[1].replace(/,/g, ""));
+  return Number.isFinite(n) ? n : null;
+}
+
+function normalizeKey(key: string): string {
+  return key.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+/**
+ * Asset/liability totals arrive either as a printed grand total or as a
+ * itemised object. When the object nests a grosstotalvalue block whose leaves
+ * are all plain amounts, sum them into one printed-style total; anything less
+ * certain falls back to JSON so no value is ever invented or "[object Object]".
+ */
+function flattenStructuredTotal(value: unknown): string | undefined {
+  if (value === null || value === undefined) return undefined;
+  if (typeof value !== "object" || Array.isArray(value)) return scalarString(value);
+
+  const obj = value as Record<string, unknown>;
+  for (const own of ["totalAssets", "totalLiabilities"]) {
+    const direct = parseRupeeLeaf(obj[own]);
+    if (direct !== null && obj[own] !== null && obj[own] !== undefined && obj[own] !== "") {
+      return `Rs. ${Number.isInteger(direct) ? direct : direct.toFixed(2)}`;
+    }
+  }
+
+  const totals: number[] = [];
+  let sawTotalKey = false;
+  let clean = true;
+
+  // Collects every plain amount under a money-total node; marks the row dirty
+  // when a leaf cannot be read as an amount (then the whole JSON is kept).
+  const collectLeaves = (node: unknown): void => {
+    if (!clean) return;
+    if (node === null || node === undefined) return;
+    if (typeof node === "object" && !Array.isArray(node)) {
+      for (const v of Object.values(node as Record<string, unknown>)) collectLeaves(v);
+      return;
+    }
+    if (Array.isArray(node)) {
+      for (const v of node) collectLeaves(v);
+      return;
+    }
+    const n = parseRupeeLeaf(node);
+    if (n === null) clean = false;
+    else totals.push(n);
+  };
+
+  const walk = (node: unknown): boolean => {
+    if (Array.isArray(node)) return node.every(walk);
+    if (node === null || typeof node !== "object") return true;
+    for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
+      if (MONEY_TOTAL_KEYS.has(normalizeKey(k))) {
+        sawTotalKey = true;
+        collectLeaves(v);
+      } else if (v !== null && typeof v === "object" && !walk(v)) {
+        return false;
+      }
+    }
+    return true;
+  };
+
+  if (!walk(obj) || !clean || !sawTotalKey || !totals.length) return JSON.stringify(value);
+  const sum = totals.reduce((a, b) => a + b, 0);
+  return `Rs. ${Number.isInteger(sum) ? sum : sum.toFixed(2)}`;
+}
+
+/**
+ * Normalises a raw engine extraction: resolves key aliases onto the canonical
+ * schema keys and flattens object-shaped scalar fields. Idempotent, so it is
+ * safe to run on freshly parsed output and on already-stored rows alike.
+ */
+export function normalizeExtraction(data: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...data };
+
+  for (const [canonical, aliases] of Object.entries(EXTRACTION_KEY_ALIASES)) {
+    if (!isBlank(out[canonical])) continue;
+    for (const alias of aliases) {
+      if (!isBlank(out[alias])) {
+        out[canonical] = out[alias];
+        break;
+      }
+    }
+  }
+
+  for (const field of SCALAR_EXTRACTION_FIELDS) {
+    const value = out[field];
+    if (value === null || value === undefined) continue;
+    if (field === "totalAssets" || field === "totalLiabilities") {
+      let candidate = value;
+      // Rows written before flattenStructuredTotal existed hold raw JSON text;
+      // re-parse it so the sum pass reaches them too.
+      if (typeof candidate === "string" && /^[[{]/.test(candidate.trim())) {
+        try {
+          candidate = JSON.parse(candidate.trim());
+        } catch {
+          /* keep the string */
+        }
+      }
+      if (typeof candidate === "object") out[field] = flattenStructuredTotal(candidate);
+    } else if (typeof value === "object") {
+      out[field] = scalarString(value);
+    }
+  }
+
+  return out;
+}
+
 function renderValue(value: unknown): string {
   if (value === null || value === undefined) return "";
   if (typeof value === "object") return JSON.stringify(value);
@@ -557,14 +738,13 @@ export function renderExtractedText(data: Record<string, unknown>): string {
  * so any consumer expecting the old shape keeps working.
  */
 export function buildParsedData(data: Record<string, unknown>, meta: Record<string, unknown>): Record<string, unknown> {
-  const str = (v: unknown) => (v === null || v === undefined ? undefined : String(v));
-  return {
-    ...data,
-    education: str(data.educationalQualification),
-    assets: str(data.totalAssets),
-    liabilities: str(data.totalLiabilities),
-    ...meta,
+  const norm = normalizeExtraction(data);
+  const derived = {
+    education: scalarString(norm.educationalQualification),
+    assets: scalarString(norm.totalAssets),
+    liabilities: scalarString(norm.totalLiabilities),
   };
+  return { ...norm, ...derived, ...meta };
 }
 
 /** OpenRouter serves the same model at $0 while it is on the free tier. */

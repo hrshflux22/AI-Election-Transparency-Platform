@@ -40,6 +40,16 @@ function normalise(v: unknown): string {
   return String(v).toLowerCase().replace(/\s+/g, " ").replace(/[.,]/g, "").trim();
 }
 
+const MONEY_FIELDS = new Set(["totalAssets", "totalLiabilities", "totalMovableAssets", "totalImmovableAssets"]);
+
+/** Monetary values are compared as pure digits so "Rs. 5,43,000/-" == "543000". */
+function normaliseField(field: string, v: unknown): string {
+  const base = normalise(v);
+  if (!MONEY_FIELDS.has(field)) return base;
+  const digits = base.replace(/\D/g, "");
+  return digits || base;
+}
+
 function sourceOf(row: any): string {
   return row.parsedData?._source || "unknown";
 }
@@ -87,13 +97,13 @@ async function main() {
 
   // ---- Per-field fill rate ----
   console.log("\n===== KEY FIELD FILL RATE BY SOURCE =====");
-  console.log(["field".padEnd(24), ...[...bySource.keys()].map((s) => s.padEnd(10))].join(""));
+  console.log(["field".padEnd(25), ...[...bySource.keys()].map((s) => s.padEnd(12))].join(""));
   for (const f of KEY_FIELDS) {
     const cells = [...bySource.entries()].map(([s, b]) => {
-      const rate = Math.round(((b.coverage[f] || 0) / Math.max(1, b.files.size)) * 100);
-      return `${rate}%`.padEnd(10);
+      const rate = Math.round(((b.coverage[f] || 0) / Math.max(1, b.rows)) * 100);
+      return `${rate}%`.padEnd(12);
     });
-    console.log([f.padEnd(24), ...cells].join(""));
+    console.log([f.padEnd(25), ...cells].join(""));
   }
 
   // ---- Field-level agreement between engines on the same file ----
@@ -118,7 +128,7 @@ async function main() {
       if (present.length < 2) continue;
 
       const values: Record<string, string> = {};
-      for (const r of present) values[`${sourceOf(r)}@${modelOf(r)}`] = normalise(r.parsedData[field]);
+      for (const r of present) values[`${sourceOf(r)}@${modelOf(r)}`] = normaliseField(field, r.parsedData[field]);
 
       const distinct = new Set(Object.values(values));
       if (!agreements.has(field)) agreements.set(field, { agree: 0, total: 0, mismatch: [] });

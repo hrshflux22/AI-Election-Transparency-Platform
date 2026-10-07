@@ -13,6 +13,7 @@
     "db:ocr:compare": "tsx --env-file=.env.local src/lib/ocrCompare.ts",
     "db:ocr:probe": "tsx --env-file=.env.local src/lib/ocrProbe.ts",
     "db:ocr:inspect": "tsx --env-file=.env.local src/lib/ocrInspect.ts",
+    "db:ocr:repair": "tsx --env-file=.env.local src/lib/ocrRepair.ts",
     "test": "tsx src/lib/ocr/vlm.test.ts"
   },
   "dependencies": {

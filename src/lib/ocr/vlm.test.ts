@@ -1,4 +1,4 @@
-import { parseBatchExtractionJson, parseExtractionJson } from "./vlm";
+import { buildParsedData, normalizeExtraction, parseBatchExtractionJson, parseExtractionJson } from "./vlm";
 
 const cases: [string, string][] = [
   ["clean", '{"a":1,"b":"x"}'],
@@ -157,6 +157,52 @@ check("batch garbage throws", () => {
     threw = true;
   }
   assert(threw, "did not throw");
+});
+
+check("alias candidateName -> name", () => {
+  const out = normalizeExtraction({ candidateName: "A. Gopala Krishna", fatherHusbandName: "ANDE X" });
+  assert(out.name === "A. Gopala Krishna", `name=${JSON.stringify(out.name)}`);
+  assert(out.fatherName === "ANDE X", `fatherName=${JSON.stringify(out.fatherName)}`);
+});
+
+check("alias politicalParty / electionHistory", () => {
+  const out = normalizeExtraction({ politicalParty: "XYZ", electionHistory: ["2020: lost"] });
+  assert(out.party === "XYZ", `party=${JSON.stringify(out.party)}`);
+  assert(Array.isArray(out.electoralHistory) && out.electoralHistory.length === 1, "electoralHistory not mapped");
+});
+
+check("object totalAssets flattens to JSON, not [object Object]", () => {
+  const out = normalizeExtraction({ totalAssets: { someLine: { x: 1 } } });
+  assert(typeof out.totalAssets === "string" && out.totalAssets.includes("someLine"), `got ${JSON.stringify(out.totalAssets)}`);
+  assert(!String(out.totalAssets).includes("[object Object]"), "still object-shaped");
+});
+
+check("object totalAssets with grosstotalvalue sums to a printed total", () => {
+  const out = normalizeExtraction({
+    totalAssets: {
+      movable: { grosstotalvalue: { self: "116000/-", spouse: "277000/-", dependent1: "nil" } },
+      immovable: { grosstotalvalue: { self: "Rs. 50,000", spouse: "n/a" } },
+    },
+  });
+  assert(out.totalAssets === "Rs. 443000", `got ${JSON.stringify(out.totalAssets)}`);
+});
+
+check("unparseable grosstotalvalue leaf falls back to JSON", () => {
+  const out = normalizeExtraction({ totalAssets: { grosstotalvalue: { self: "cannot read this" } } });
+  assert(String(out.totalAssets).startsWith("{"), `got ${JSON.stringify(out.totalAssets)}`);
+});
+
+check("buildParsedData legacy keys never [object Object]", () => {
+  const parsed = buildParsedData({ totalAssets: { a: 1 }, totalLiabilities: { b: 2 } }, { _source: "gemini" });
+  assert(parsed.assets === JSON.stringify({ a: 1 }), `assets=${JSON.stringify(parsed.assets)}`);
+  assert(parsed.liabilities === JSON.stringify({ b: 2 }), `liabilities=${JSON.stringify(parsed.liabilities)}`);
+  assert(parsed.education === undefined, "education should stay undefined when input absent");
+});
+
+check("normalizeExtraction is idempotent", () => {
+  const once = normalizeExtraction({ candidateName: "X", totalAssets: { a: 1 } });
+  const twice = normalizeExtraction(once);
+  assert(JSON.stringify(once) === JSON.stringify(twice), "not idempotent");
 });
 
 console.log(`\n  ${pass} passed, ${fail} failed`);
